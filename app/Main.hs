@@ -8,20 +8,22 @@ import System.Environment
 import System.Exit
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
+import qualified Data.Map.Strict as Map
 
+a |> f = f a
 
 data Bencoded =
   BencString ByteString
   | BencInteger Int
   | BencList [Bencoded]
-  deriving (Show)
+  | BencDict (Map.Map String Bencoded)
+  deriving (Show, Ord, Eq)
 
 instance ToJSON Bencoded where
   toJSON (BencString string) = toJSON (B.unpack string)
   toJSON (BencInteger integer) = toJSON integer
-  toJSON (BencList lst) = toJSON (toJSON <$> lst)
-
-a |> f = f a
+  toJSON (BencList lst) = toJSON lst
+  toJSON (BencDict dict) = toJSON dict
 
 parseBencodedValue :: ByteString -> Maybe (ByteString, Bencoded)
 parseBencodedValue encodedValue
@@ -49,30 +51,32 @@ parseBencodedValue encodedValue
       in
       (B.stripPrefix "l" encodedValue)
       >>= (parseLst [])
-  | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
+  | (==) 'd' (B.head encodedValue) =
+      let parseKeyValue str =
+            parseBencodedValue str
+            >>= (\(rest, BencString key) ->
+                   parseBencodedValue rest
+                   >>= (\(rest', value) ->
+                          Just (rest', B.unpack key, value)))
 
--- decodeBencodedValue :: ByteString -> Bencoded
--- decodeBencodedValue encodedValue
---     | isDigit (B.head encodedValue) =
---         case B.readInt encodedValue of
---             Just (len, rest) -> (BencString . B.drop (1)) rest
---             Nothing -> error "Invalid encoded value"
---     | (==) 'i' (B.head encodedValue) =
---         case (B.stripPrefix "i" encodedValue) >>= B.readInt of
---           Just (value, "e") -> BencInteger value
---           _ -> error "Invalid encoded value"
---     | (==) 'l' (B.head encodedValue) =
---       case (B.stripPrefix "l" encodedValue) >>= (B.stripSuffix "e") of
---           Just elements -> BencList [ BencString "" ]
---           _ -> error "Invalid encoded value"
---     | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
+          parseDict acc str
+            | (==) "" str = Nothing
+            | (==) 'e' (B.head str) = Just (B.tail str, reverse acc)
+            | otherwise = parseKeyValue str
+                          >>= \(rest, key, value) -> parseDict ((key, value):acc) rest
+                
+      in
+      (B.stripPrefix "d" encodedValue)
+      >>= (parseDict [])
+      >>= (\(rest, assocLst) -> Just (rest, BencDict (Map.fromList assocLst)))
+
+  | otherwise = Nothing
 
 decodeBencodedValue :: ByteString -> Bencoded
 decodeBencodedValue encodedValue =
   case parseBencodedValue encodedValue of
     Just ("", decoded) -> decoded
     otherwise -> error $ "Unhandled encoded value: " ++ B.unpack encodedValue 
-
 
 main :: IO ()
 main = do
@@ -86,8 +90,7 @@ main = do
     let command = args !! 0
     case command of
         "decode" -> do
-            -- You can use print statements as follows for debugging, they'll be visible when running tests.
-
+          -- You can use print statements as follows for debugging, they'll be visible when running tests.           
             let encodedValue = args !! 1
             let decodedValue = decodeBencodedValue(B.pack encodedValue)
             
