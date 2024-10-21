@@ -25,10 +25,9 @@ instance ToJSON Bencoded where
   toJSON (BencList lst) = toJSON lst
   toJSON (BencDict dict) = toJSON dict
 
-parseBencodedValue :: ByteString -> Maybe (ByteString, Bencoded)
-parseBencodedValue encodedValue
-  | isDigit (B.head encodedValue) =
-      (B.readInt encodedValue)
+parseBencodedString :: ByteString -> Maybe (ByteString, Bencoded)
+parseBencodedString encodedValue =
+  (B.readInt encodedValue)
       >>= (\(len, cRest) ->
              (B.stripPrefix ":" cRest)   -- drop ':'
              >>= (\rest -> rest
@@ -36,40 +35,56 @@ parseBencodedValue encodedValue
                   |> (swap)                -- (rest, numStr)
                   |> (BencString <$>)      -- (rest, bencStr)
                   |> Just))
-  | (==) 'i' (B.head encodedValue) =
-      ((B.stripPrefix "i" encodedValue) >>= B.readInt)
+
+parseBencodedInteger :: ByteString -> Maybe (ByteString, Bencoded)
+parseBencodedInteger encodedValue =
+  ((B.stripPrefix "i" encodedValue) >>= B.readInt)
       >>= (\(value, eRest) ->
              (B.stripPrefix "e" eRest)
              >>= (\rest -> Just (rest, BencInteger value)))
+
+parseBencodedList :: ByteString -> Maybe (ByteString, Bencoded)
+parseBencodedList encodedValue =
+  let parseLst acc str
+        | (==) "" str = Nothing
+        | (==) 'e' (B.head str) =
+            Just (B.tail str, (BencList (reverse acc)))
+        | otherwise = parseBencodedValue str
+                      >>= \(rest, value) -> parseLst (value:acc) rest
+  in
+    (B.stripPrefix "l" encodedValue)
+    >>= (parseLst [])
+
+parseBencodedDict :: ByteString -> Maybe (ByteString, Bencoded)
+parseBencodedDict encodedValue =
+  let parseKeyValue str =
+        parseBencodedValue str
+        >>= (\(rest, BencString key) ->
+                parseBencodedValue rest
+                >>= (\(rest', value) ->
+                        Just (rest', B.unpack key, value)))
+
+      parseDict acc str
+        | (==) "" str = Nothing
+        | (==) 'e' (B.head str) = Just (B.tail str, reverse acc)
+        | otherwise = parseKeyValue str
+                      >>= \(rest, key, value) -> parseDict ((key, value):acc) rest
+                                                 
+  in
+    (B.stripPrefix "d" encodedValue)
+    >>= (parseDict [])
+    >>= (\(rest, assocLst) -> Just (rest, BencDict (Map.fromList assocLst)))
+  
+parseBencodedValue :: ByteString -> Maybe (ByteString, Bencoded)
+parseBencodedValue encodedValue
+  | isDigit (B.head encodedValue) =
+      parseBencodedString encodedValue
+  | (==) 'i' (B.head encodedValue) =
+      parseBencodedInteger encodedValue
   | (==) 'l' (B.head encodedValue) =
-      let parseLst acc str
-            | (==) "" str = Nothing
-            | (==) 'e' (B.head str) =
-              Just (B.tail str, (BencList (reverse acc)))
-            | otherwise = parseBencodedValue str
-              >>= \(rest, value) -> parseLst (value:acc) rest
-      in
-      (B.stripPrefix "l" encodedValue)
-      >>= (parseLst [])
+      parseBencodedList encodedValue
   | (==) 'd' (B.head encodedValue) =
-      let parseKeyValue str =
-            parseBencodedValue str
-            >>= (\(rest, BencString key) ->
-                   parseBencodedValue rest
-                   >>= (\(rest', value) ->
-                          Just (rest', B.unpack key, value)))
-
-          parseDict acc str
-            | (==) "" str = Nothing
-            | (==) 'e' (B.head str) = Just (B.tail str, reverse acc)
-            | otherwise = parseKeyValue str
-                          >>= \(rest, key, value) -> parseDict ((key, value):acc) rest
-                
-      in
-      (B.stripPrefix "d" encodedValue)
-      >>= (parseDict [])
-      >>= (\(rest, assocLst) -> Just (rest, BencDict (Map.fromList assocLst)))
-
+      parseBencodedDict encodedValue
   | otherwise = Nothing
 
 decodeBencodedValue :: ByteString -> Bencoded
