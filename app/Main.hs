@@ -8,15 +8,24 @@ import System.Exit
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy as LB
 
-decodeBencodedValue :: ByteString -> ByteString
+data Bencoded =
+  BencString ByteString
+  | BencInteger Int
+
+instance ToJSON Bencoded where
+  toJSON (BencString string) = toJSON (B.unpack string)
+  toJSON (BencInteger integer) = toJSON integer
+  
+
+decodeBencodedValue :: ByteString -> Bencoded
 decodeBencodedValue encodedValue
     | isDigit (B.head encodedValue) =
         case B.elemIndex ':' encodedValue of
-            Just colonIndex -> B.drop (colonIndex + 1) encodedValue
+            Just colonIndex -> (BencString . B.drop (colonIndex + 1)) encodedValue
             Nothing -> error "Invalid encoded value"
     | (==) 'i' (B.head encodedValue) =
         case (B.stripPrefix "i" encodedValue) >>= B.readInt of
-          Just (value, "e") -> (B.pack .show) value
+          Just (value, "e") -> BencInteger value
           _ -> error "Invalid encoded value"
     | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
 
@@ -37,7 +46,8 @@ main = do
             -- Uncomment this block to pass stage 1
             let encodedValue = args !! 1
             let decodedValue = decodeBencodedValue(B.pack encodedValue)
-            let jsonValue = encode(B.unpack decodedValue)
+            
+            let jsonValue = encode decodedValue
             LB.putStr jsonValue
             putStr "\n"
         _ -> putStrLn $ "Unknown command: " ++ command
