@@ -14,6 +14,10 @@ decodeBencodedValue encodedValue
         case B.elemIndex ':' encodedValue of
             Just colonIndex -> B.drop (colonIndex + 1) encodedValue
             Nothing -> error "Invalid encoded value"
+    | (==) 'i' (B.head encodedValue) =
+        case (B.stripPrefix "i" encodedValue) >>= B.readInt of
+          Just (value, "e") -> (B.pack .show) value
+          _ -> error "Invalid encoded value"
     | otherwise = error $ "Unhandled encoded value: " ++ B.unpack encodedValue
 
 main :: IO ()
