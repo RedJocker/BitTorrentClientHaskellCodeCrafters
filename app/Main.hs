@@ -16,6 +16,7 @@ import qualified Data.Map.Strict as Map
 import Parser
 import Crypto.Hash as Hash
 import Numeric (showHex)
+import Util
 
 -- use the following command to create a language server for this ghc version
 -- ghcup compile hls --version 2.6.0.0 --ghc 9.4.6
@@ -26,21 +27,6 @@ doDecode encodedValue = do
   let jsonValue = encode decodedValue
   LB.putStr jsonValue
   putStr "\n"
-
-word8ToHex :: Word8 -> String
-word8ToHex w =
-  let
-    h = showHex w ""
-  in
-    if length h == 1 then '0' : h else h
-
-chuncked :: Int -> ByteString -> [ByteString]
-chuncked size str =
-  let helper acc cur =
-        case cur of
-          "" -> reverse acc
-          _ ->  helper ((B.take size cur):acc) (B.drop size cur) 
-  in helper [] str 
 
 doInfo :: String -> IO ()
 doInfo filePath = do

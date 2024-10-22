@@ -36,20 +36,20 @@ instance ToJSON Bencoded where
 
 parseBencodedString :: ByteString -> Maybe (ByteString, Bencoded)
 parseBencodedString encodedValue =
-  (B.readInt encodedValue)
+  B.readInt encodedValue
       >>= (\(len, cRest) ->
-             (B.stripPrefix ":" cRest)   -- drop ':'
+             B.stripPrefix ":" cRest   -- drop ':'
              >>= (\rest -> rest
-                  |> (B.splitAt len)       -- (numStr, rest)
-                  |> (swap)                -- (rest, numStr)
+                  |> B.splitAt len       -- (numStr, rest)
+                  |> swap                -- (rest, numStr)
                   |> (BencString <$>)      -- (rest, bencStr)
                   |> Just))
 
 parseBencodedInteger :: ByteString -> Maybe (ByteString, Bencoded)
 parseBencodedInteger encodedValue =
-  ((B.stripPrefix "i" encodedValue) >>= B.readInt)
+  (B.stripPrefix "i" encodedValue >>= B.readInt)
       >>= (\(value, eRest) ->
-             (B.stripPrefix "e" eRest)
+             B.stripPrefix "e" eRest
              >>= (\rest -> return (rest, BencInteger value)))
 
 parseBencodedList :: ByteString -> Maybe (ByteString, Bencoded)
@@ -57,12 +57,12 @@ parseBencodedList encodedValue =
   let parseLst acc str
         | (==) "" str = Nothing
         | (==) 'e' (B.head str) =
-            return (B.tail str, (BencList (reverse acc)))
+            return (B.tail str, BencList (reverse acc))
         | otherwise = parseBencodedValue str
                       >>= \(rest, value) -> parseLst (value:acc) rest
   in
-    (B.stripPrefix "l" encodedValue)
-    >>= (parseLst [])
+    B.stripPrefix "l" encodedValue
+    >>= parseLst []
 
 parseBencodedDict :: ByteString -> Maybe (ByteString, Bencoded)
 parseBencodedDict encodedValue =
@@ -81,8 +81,8 @@ parseBencodedDict encodedValue =
                             parseDict ((key, value):acc) rest
 
   in
-    (B.stripPrefix "d" encodedValue)
-    >>= (parseDict [])
+    B.stripPrefix "d" encodedValue
+    >>= parseDict []
     >>= (\(rest, assocLst) -> Just (rest, BencDict (Map.fromList assocLst)))
 
 parseBencodedValue :: ByteString -> Maybe (ByteString, Bencoded)
