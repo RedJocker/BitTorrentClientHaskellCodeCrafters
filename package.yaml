@@ -22,6 +22,7 @@ dependencies:
 - async  # may help with concurrency
 - mtl  # may help with structuring
 - cryptonite
+- HTTP
 # Parsing libs
 - megaparsec
 - parser-combinators
