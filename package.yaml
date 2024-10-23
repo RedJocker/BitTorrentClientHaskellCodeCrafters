@@ -21,7 +21,7 @@ dependencies:
 - time  # may help with the expiry function
 - async  # may help with concurrency
 - mtl  # may help with structuring
-- cryptonite
+- cryptohash-sha1
 - HTTP
 # Parsing libs
 - megaparsec

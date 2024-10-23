@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Use lambda-case" #-}
 
 module Util (
   word8ToHex
@@ -9,16 +8,17 @@ module Util (
   , chunckedLst
   , recvAll
   , ipStr
+  , toHex
   ) where
 import Data.ByteString.Char8 (ByteString)
 import Data.Word (Word8)
 import Data.List (intercalate)
 import Data.Bits (shiftL)
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
 import Numeric (showHex)
 import Network.Simple.TCP
-import Data.Maybe (fromJust)
-import Control.Monad.IO.Class 
+
 word8ToHex :: Word8 -> String
 word8ToHex w =
   let
@@ -66,6 +66,5 @@ ipStr [a,b,c,d,e,f] =
   in
     ipHostStr <> ":" <> portStr 
 
-
-
-
+toHex :: ByteString -> String
+toHex str = concatMap word8ToHex (BS.unpack str)

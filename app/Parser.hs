@@ -7,16 +7,12 @@ module Parser (
   bencodeValue
 ) where
 
-
 import Data.Aeson
 import Data.ByteString.Char8 (ByteString)
 import Data.Char (isDigit, ord)
 import Data.Tuple (swap)
-import System.Environment
-import System.Exit
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
-import qualified Data.ByteString.Lazy as LB
 import qualified Data.Map.Strict as Map
 
 a |> f = f a
