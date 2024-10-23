@@ -141,15 +141,12 @@ doPeers filePath = do
                 [ "GET " ++ path ++ " HTTP/1.1"
                 , "Host: " ++ hostname request
                 ] ++ "\r\n\r\n"
-    --putStrLn requestStr
+
     send socket (B.pack requestStr)
     response <- recvAll socket
-    --putStrLn (B.unpack response)
     
-    let responseLst = B.dropWhile (== '\n')  <$> B.split '\r' response
-    let (headLst, bodyLst) = break (== "") responseLst
-    let (BencDict bodyBenc) = decodeBencodedValue ( B.concat bodyLst )
-    
+    let (head, body) = BS.drop 4 <$> BS.breakSubstring (B.pack "\r\n\r\n") response
+    let (BencDict bodyBenc) = decodeBencodedValue body
     let (BencString peersBytes) = (Map.!) bodyBenc "peers"
     let byteArr = BS.unpack peersBytes
     let ips = ipStr <$> chunckedLst 6 byteArr
