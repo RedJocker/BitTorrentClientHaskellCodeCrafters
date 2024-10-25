@@ -18,10 +18,11 @@ import qualified Data.Map.Strict as Map
 import Parser
 import Crypto.Hash.SHA1 as SHA1
 import Util
-import Network.Simple.TCP (connect)
+import Network.Simple.TCP (connect, HostName, ServiceName)
 import Network.Socket.ByteString (sendAll, send)
 import Network.HTTP.Base (urlEncodeVars)
 import Text.Printf (printf)
+import Text.Read (readMaybe)
 
 -- use the following command to create a language server for this ghc version
 -- ghcup compile hls --version 2.6.0.0 --ghc 9.4.6
@@ -69,10 +70,10 @@ trackerRequest (BencDict torrentDict) =
   in
     TrackerRequest
     { trackerUrl = B.unpack host
-    , infoHash = infoHash  
+    , infoHash = infoHash
     , infoHashQueryParam = B.unpack infoHashUrlEnc
     , hostname = B.unpack hostname
-    , hostport = if ("" /= hostport) then
+    , hostport = if "" /= hostport then
                     B.unpack (B.dropWhile (== ':') hostport)
                  else "80"
     , peerId = "09876543210123456789"
@@ -84,7 +85,6 @@ trackerRequest (BencDict torrentDict) =
     }
 
 
--- Function to convert TorrentParams to query string
 trackerRequestQueryString :: TrackerRequest -> String
 trackerRequestQueryString params =
     urlEncodeVars
@@ -126,69 +126,82 @@ doInfo filePath = do
         _otherwise -> return ()
     _otherwise -> return ()
 
-doPeers :: String -> IO ()
-doPeers filePath = do
-  decodedValue <- getBencFromTorrentFile filePath
-  let request = trackerRequest decodedValue
+getPeerIps :: TrackerRequest -> IO [String]
+getPeerIps trackerRequest = do
   let path = "/announce?info_hash="
-        <> infoHashQueryParam request
-        <> "&"
-        <> trackerRequestQueryString request
-  --putStrLn path
-  connect (hostname request) (hostport request) $ \(socket, remoteAddr) -> do
-    --putStrLn (show remoteAddr)
+             <> infoHashQueryParam trackerRequest
+             <> "&"
+             <> trackerRequestQueryString trackerRequest
+
+  connect (hostname trackerRequest) (hostport trackerRequest) $ \(socket, remoteAddr) -> do
     let requestStr = intercalate "\r\n"
-                [ "GET " ++ path ++ " HTTP/1.1"
-                , "Host: " ++ hostname request
-                ] ++ "\r\n\r\n"
+                     [ "GET " ++ path ++ " HTTP/1.1"
+                     , "Host: " ++ hostname trackerRequest
+                     ] ++ "\r\n\r\n"
 
     send socket (B.pack requestStr)
-    response <- recvAll socket
-    
-    let (head, body) = BS.drop 4 <$> BS.breakSubstring (B.pack "\r\n\r\n") response
+    (head, body) <- recvHttp socket
     let (BencDict bodyBenc) = decodeBencodedValue body
     let (BencString peersBytes) = (Map.!) bodyBenc "peers"
     let byteArr = BS.unpack peersBytes
-    let ips = ipStr <$> chunckedLst 6 byteArr
-     
-    mapM_ putStrLn ips 
-    --mapM_ B.putStrLn body
-    --putStrLn (B.unpack response)
+    return $ ipStr <$> chunckedLst 6 byteArr
 
-doHandshake :: String -> String -> String  -> IO ()
-doHandshake filePath peerIp peerPort = do
-  
-  
+doPeers :: String -> IO ()
+doPeers filePath = do
+  torrentBenc <- getBencFromTorrentFile filePath
+  let request = trackerRequest torrentBenc
+  peerIps <- getPeerIps request
+  mapM_ putStrLn peerIps
+
+connectPeer :: TrackerRequest
+  -> HostName -> ServiceName -> (String ->IO r) -> IO r
+connectPeer trackerRequest peerIp peerPort onConnect = do
   let lenProtocolString = BS.pack [19]
   let protocolString = B.pack "BitTorrent protocol"
   let reservedBytes = BS.pack (replicate 8 0)
-  decodedValue <- getBencFromTorrentFile filePath
-  let request = trackerRequest decodedValue
-  let TrackerRequest {infoHash=infoHash, peerId=peerId} = request
+
+  let TrackerRequest {infoHash=infoHash, peerId=peerId} = trackerRequest
   let handshakeMsg = lenProtocolString
         <> protocolString
         <> reservedBytes
         <> infoHash
         <> B.pack peerId
+  let port = if peerPort == "" then "80" else peerPort
 
-  --printf "filePath %s peerIp: %s peerPort %s %s\n" filePath peerIp peerPort (B.unpack infoHash)
-  --print  handshakeMsg
-  connect peerIp peerPort $ \(socket, remoteAddr) -> do
-    --putStrLn (show remoteAddr)
-    
-    
+  connect peerIp port $ \(socket, remoteAddr) -> do
+
     send socket handshakeMsg
-    response <- recvAll socket
-    let peerId = concatMap word8ToHex ((BS.unpack . B.take 20 . B.drop 48) response)
+    response <- recvPeerHandshake socket
+    let peerId = concatMap word8ToHex ((BS.unpack . B.drop 48) response)
     --putStrLn $ "Response: " <> (B.unpack response)
-    putStrLn $ "Peer ID: " <> peerId
-    
- 
+    onConnect peerId
+
+doHandshake :: String -> String -> String  -> IO ()
+doHandshake torrentFile peerIp peerPort = do
+  torrentBenc <- getBencFromTorrentFile torrentFile
+  let request = trackerRequest torrentBenc
+  connectPeer request peerIp peerPort
+    (\peerId -> putStrLn $ "Peer ID: " <> peerId)
+
+
+doDownloadPiece :: String -> String -> Int  -> IO ()
+doDownloadPiece outFile torrentFile pieceIndex = do
+
+  torrentBenc <- getBencFromTorrentFile torrentFile
+  let request = trackerRequest torrentBenc
+  peerIps <- getPeerIps request
+  let targetIp = peerIps !! 0
+  let (peerHostname, peerPort) = dropWhile (== ':') <$> break (== ':') targetIp
+  printf "outFile: %s torrentFile: \
+         \%s pieceIndex %d\n" outFile torrentFile pieceIndex
+  connectPeer request peerHostname peerPort
+    (\peerId -> putStrLn $ "Peer ID: " <> peerId)
+
 
 main :: IO ()
 main = do
     args <- getArgs
-    when (length args < 2) $ do
+    when (length (take 2 args) < 2) $ do
             putStrLn "Usage: your_bittorrent.sh <command> <args>"
             exitWith (ExitFailure 1)
 
@@ -199,10 +212,22 @@ main = do
         "info" -> doInfo arg
         "peers" -> doPeers arg
         "handshake"-> do
-          when (length args < 3) $ do
-            putStrLn "Usage: your_bittorrent.sh handshake <file> <peer_ip>:<peer_port>"
-            exitWith (ExitFailure 1)
-          let (peerIp, peerPort) =
-                dropWhile (== ':' ) <$> break (== ':') (args !! 2)
-          doHandshake arg peerIp peerPort
+            when (length (take 3 args) < 3) $ do
+                putStrLn "Usage: your_bittorrent.sh \
+                         \handshake <file> <peer_ip>:<peer_port>"
+                exitWith (ExitFailure 1)
+            let (peerIp, peerPort) =
+                  dropWhile (== ':' ) <$> break (== ':') (args !! 2)
+            doHandshake arg peerIp peerPort
+        "download_piece" -> do
+            when (length (take 5 args) < 5) $ do
+                putStrLn "Usage: your_bittorrent.sh \
+                         \download_piece -o \
+                         \<out_file> <torrent_file> <piece_index>"
+                exitWith (ExitFailure 1)
+            let pieceIndex = fromMaybe (-1 :: Int) (readMaybe (args !! 4))
+            if pieceIndex < 0 then
+              putStrLn "piece_index must be a positive number"
+            else
+              doDownloadPiece (args !! 2) (args !! 3) pieceIndex
         _ -> putStrLn $ "Unknown command: " ++ command

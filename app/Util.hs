@@ -9,6 +9,8 @@ module Util (
   , recvAll
   , ipStr
   , toHex
+  , recvPeerHandshake
+  , recvHttp
   ) where
 import Data.ByteString.Char8 (ByteString)
 import Data.Word (Word8)
@@ -56,6 +58,25 @@ recvAll socket = do
             go (acc <> chk)
         Nothing -> do
           pure acc
+
+recvHttp :: Socket -> IO (ByteString , ByteString)
+recvHttp socket = do
+  response <- recvAll socket
+  return $ BS.drop 4 <$> BS.breakSubstring (B.pack "\r\n\r\n") response
+
+
+recvPeerHandshake :: Socket -> IO ByteString 
+recvPeerHandshake socket = do
+  go mempty
+  where
+    go acc = do
+      chunk <- recv socket 68
+      case chunk of
+        Just chk -> do
+            pure (acc <> chk)
+        Nothing -> do
+          pure acc
+
 
 ipStr :: [Word8] -> String 
 ipStr [a,b,c,d,e,f] = 
