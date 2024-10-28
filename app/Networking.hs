@@ -10,13 +10,15 @@ module Networking (
   , recvInt
   , recvId 
   , recvBody
+  , sendInterested
+  , sendRequest
   ) where
 
 import Data.ByteString.Char8 (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
 import Network.Simple.TCP
-import Util (byteStringToInt)
+import Util (byteStringToInt, word64ToBytes)
 
 recvAll :: Socket -> IO ByteString 
 recvAll socket = do
@@ -111,3 +113,20 @@ recvPeerHandshake socket = do
             pure (acc <> chk)
         Nothing -> do
           pure acc
+
+sendMessage socket len id body = do
+  send socket (BS.pack (word64ToBytes len ++ [id] ++ body)) 
+
+sendInterested socket = do
+  let len = 1
+  let id = 2
+  let body = []
+  sendMessage socket len id body
+
+sendRequest socket pieceIndex blockOffset blockLen = do
+  let len = 13
+  let id = 6
+  let body = word64ToBytes (fromIntegral pieceIndex) ++    
+             word64ToBytes blockOffset ++                  
+             word64ToBytes blockLen
+  sendMessage socket len id body

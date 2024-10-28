@@ -214,18 +214,14 @@ doDownloadPiece outFile torrentFile pieceIndex = do
   connectPeer request peerHostname peerPort
     (\peerId socket -> do
         (len, id, body) <- recvPeerMessage socket
-        send socket (BS.pack (word64ToBytes 1 ++ [2]))
+        sendInterested socket
         (len2, id2, body2) <- recvPeerMessage socket
         let makeRequest blockOffset blockLen = do
-              send socket (BS.pack (word64ToBytes 13 ++                     -- message len
-                              [6] ++                                        -- message id
-                              word64ToBytes (fromIntegral pieceIndex) ++    -- pieceIndex
-                              word64ToBytes blockOffset ++                  -- block offset 
-                              word64ToBytes blockLen))                      -- block length 
+              sendRequest socket pieceIndex blockOffset blockLen
               (len3, id3, body3) <- recvPeerMessage socket
               if id3 == BS.pack [7] then do
                 BS.appendFile outFile (BS.drop 8 body3)
-                return (1 :: Int) 
+                return (1 :: Int)
               else
                 return (0 :: Int)
         let requestLoop blockNum
@@ -237,6 +233,50 @@ doDownloadPiece outFile torrentFile pieceIndex = do
                       makeRequest ((2 ^ 14) * fromIntegral blockNum) (fromIntegral lastSize)
                       return ()
                   return ()
+        requestLoop 0
+    )
+
+
+doDownload :: String -> String -> IO ()
+doDownload outFile torrentFile = do
+  -- not using concurrency neither verifying hash
+  torrentBenc <- getBencFromTorrentFile torrentFile
+  let request = trackerRequest torrentBenc
+  peerIps <- getPeerIps request
+  let pieces = piecesNum request
+  let targetIp = head peerIps
+  let (peerHostname, peerPort) = dropWhile (== ':') <$> break (== ':') targetIp
+  BS.writeFile outFile (BS.pack []) 
+  connectPeer request peerHostname peerPort
+    (\peerId socket -> do
+        (len, id, body) <- recvPeerMessage socket
+        sendInterested socket
+        (len2, id2, body2) <- recvPeerMessage socket
+        let makeRequest blockOffset blockLen pieceIndex = do
+              sendRequest socket pieceIndex blockOffset blockLen
+              (len3, id3, body3) <- recvPeerMessage socket
+              if id3 == BS.pack [7] then do
+                BS.appendFile outFile (BS.drop 8 body3)
+                return (1 :: Int)
+              else
+                return (0 :: Int)
+        let pieceRequestLoop blocks lastSize blockNum pieceIndex
+              | blockNum < blocks = do
+                  res <- makeRequest ((2 ^ 14) * fromIntegral blockNum) 16384 pieceIndex
+                  pieceRequestLoop blocks lastSize (blockNum + res) pieceIndex 
+              | blockNum == blocks = do
+                  when (lastSize > 0) $ do
+                      makeRequest ((2 ^ 14) * fromIntegral blockNum) (fromIntegral lastSize) pieceIndex
+                      return ()
+        let requestLoop pieceIndex
+              | pieceIndex < pieces = do
+                  let pieceSize = if pieceIndex == (piecesNum request - 1)
+                                  then lastPieceLength request
+                                  else pieceLength request
+                  let (blocks, lastSize) = pieceSize `divMod` (16 * 1024)
+                  pieceRequestLoop blocks lastSize 0 pieceIndex
+                  requestLoop (pieceIndex + 1)
+              | otherwise = return ()
         requestLoop 0
     )
 
@@ -274,4 +314,11 @@ main = do
             case maybePieceIndex of
               Just pieceIndex -> doDownloadPiece (args !! 2) (args !! 3) pieceIndex
               Nothing -> putStrLn "piece_index must be a positive number"
+        "download" -> do
+            when (length (take 4 args) < 4) $ do
+                putStrLn "Usage: your_bittorrent.sh \
+                         \download -o \
+                         \<out_file> <torrent_file>"
+                exitWith (ExitFailure 1)
+            doDownload (args !! 2) (args !! 3)
         _ -> putStrLn $ "Unknown command: " ++ command
