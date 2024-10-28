@@ -6,20 +6,19 @@ module Util (
   word8ToHex
   , chuncked
   , chunckedLst
-  , recvAll
   , ipStr
   , toHex
-  , recvPeerHandshake
-  , recvHttp
+  , word64ToBytes
+  , byteStringToInt
   ) where
+
 import Data.ByteString.Char8 (ByteString)
-import Data.Word (Word8)
+import Data.Word (Word8, Word64)
 import Data.List (intercalate)
 import Data.Bits (shiftL)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as B
 import Numeric (showHex)
-import Network.Simple.TCP
 
 word8ToHex :: Word8 -> String
 word8ToHex w =
@@ -43,40 +42,21 @@ chunckedLst size lst =
         | otherwise = helper ((take size cur):acc) (drop size cur) 
   in helper mempty lst 
 
-recvAll :: Socket -> IO ByteString 
-recvAll socket = do
-  go mempty
-  where
-    go acc = do
-      chunk <- recv socket 4096
-      case chunk of
-        Just chk -> do
-          let len = B.length chk
-          if len < 4096 then
-            pure (acc <> chk)
-          else 
-            go (acc <> chk)
-        Nothing -> do
-          pure acc
+byteStringToInt :: ByteString -> Int
+byteStringToInt = BS.foldl
+      (\acc cur -> 256 * acc + fromIntegral cur)
+      0
 
-recvHttp :: Socket -> IO (ByteString , ByteString)
-recvHttp socket = do
-  response <- recvAll socket
-  return $ BS.drop 4 <$> BS.breakSubstring (B.pack "\r\n\r\n") response
-
-
-recvPeerHandshake :: Socket -> IO ByteString 
-recvPeerHandshake socket = do
-  go mempty
-  where
-    go acc = do
-      chunk <- recv socket 68
-      case chunk of
-        Just chk -> do
-            pure (acc <> chk)
-        Nothing -> do
-          pure acc
-
+word64ToBytes :: Word64 -> [Word8]
+word64ToBytes num =
+  let helper cur acc pos =
+        let (d, m) = cur `divMod` 256
+        in
+          if pos == 4 then
+            fromIntegral m : acc
+          else
+            helper d (fromIntegral m : acc) (pos + 1)
+  in helper num [] 1
 
 ipStr :: [Word8] -> String 
 ipStr [a,b,c,d,e,f] = 

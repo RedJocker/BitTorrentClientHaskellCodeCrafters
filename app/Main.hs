@@ -18,11 +18,15 @@ import qualified Data.Map.Strict as Map
 import Parser
 import Crypto.Hash.SHA1 as SHA1
 import Util
-import Network.Simple.TCP (connect, HostName, ServiceName)
+import Networking
+import Network.Simple.TCP (connect, HostName, ServiceName, Socket)
 import Network.Socket.ByteString (sendAll, send)
 import Network.HTTP.Base (urlEncodeVars)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
+import Control.Monad.Trans.Maybe
+import Control.Monad.IO.Class (liftIO)
+import Control.Applicative ((<|>))
 
 -- use the following command to create a language server for this ghc version
 -- ghcup compile hls --version 2.6.0.0 --ghc 9.4.6
@@ -51,6 +55,10 @@ data TrackerRequest = TrackerRequest
   , uploaded  :: !Int
   , downloaded  :: !Int
   , left  :: !Int
+  , fileLength :: !Int 
+  , pieceLength :: !Int
+  , piecesNum :: !Int
+  , lastPieceLength :: !Int 
   , compact  :: !Int
   } deriving (Show, Generic)
 
@@ -62,11 +70,14 @@ trackerRequest (BencDict torrentDict) =
       (hostname, hostport) = B.break (== ':') host
       infoBenc@(BencDict infoDict) = (Map.!) torrentDict "info"
       (BencInteger infoLength) = (Map.!) infoDict "length"
-      (BencInteger pieceLenght) = (Map.!) infoDict "piece length"
+      (BencInteger pieceLength) = (Map.!) infoDict "piece length"
+      (BencInteger fileLength) = (Map.!) infoDict "length"
       infoBencStr = bencodeValue infoBenc
       infoHash = SHA1.hash infoBencStr
       infoHashHex = toHex infoHash
       infoHashUrlEnc =  B.concat (B.cons '%' <$>  chuncked 2 (B.pack infoHashHex))
+      (intPieces, lastPieceLength) = fileLength `divMod` pieceLength
+      pieces = intPieces + (if lastPieceLength > 0 then 1 else 0) 
   in
     TrackerRequest
     { trackerUrl = B.unpack host
@@ -80,10 +91,13 @@ trackerRequest (BencDict torrentDict) =
     , port = 6881
     , uploaded = 0
     , downloaded = 0
-    , left = pieceLenght
+    , left = pieceLength
     , compact = 1
+    , pieceLength = pieceLength
+    , fileLength = fileLength
+    , piecesNum = pieces
+    , lastPieceLength = lastPieceLength
     }
-
 
 trackerRequestQueryString :: TrackerRequest -> String
 trackerRequestQueryString params =
@@ -154,7 +168,7 @@ doPeers filePath = do
   mapM_ putStrLn peerIps
 
 connectPeer :: TrackerRequest
-  -> HostName -> ServiceName -> (String ->IO r) -> IO r
+  -> HostName -> ServiceName -> (String -> Socket ->IO r) -> IO r
 connectPeer trackerRequest peerIp peerPort onConnect = do
   let lenProtocolString = BS.pack [19]
   let protocolString = B.pack "BitTorrent protocol"
@@ -174,14 +188,14 @@ connectPeer trackerRequest peerIp peerPort onConnect = do
     response <- recvPeerHandshake socket
     let peerId = concatMap word8ToHex ((BS.unpack . B.drop 48) response)
     --putStrLn $ "Response: " <> (B.unpack response)
-    onConnect peerId
+    onConnect peerId socket 
 
 doHandshake :: String -> String -> String  -> IO ()
 doHandshake torrentFile peerIp peerPort = do
   torrentBenc <- getBencFromTorrentFile torrentFile
   let request = trackerRequest torrentBenc
   connectPeer request peerIp peerPort
-    (\peerId -> putStrLn $ "Peer ID: " <> peerId)
+    (\peerId socket -> putStrLn $ "Peer ID: " <> peerId)
 
 
 doDownloadPiece :: String -> String -> Int  -> IO ()
@@ -190,12 +204,41 @@ doDownloadPiece outFile torrentFile pieceIndex = do
   torrentBenc <- getBencFromTorrentFile torrentFile
   let request = trackerRequest torrentBenc
   peerIps <- getPeerIps request
-  let targetIp = peerIps !! 0
+  let pieceSize = if pieceIndex == (piecesNum request - 1)
+        then lastPieceLength request
+        else pieceLength request
+  let targetIp = head peerIps
   let (peerHostname, peerPort) = dropWhile (== ':') <$> break (== ':') targetIp
-  printf "outFile: %s torrentFile: \
-         \%s pieceIndex %d\n" outFile torrentFile pieceIndex
+  let (blocks, lastSize) = pieceSize `divMod` (16 * 1024)
+  BS.writeFile outFile (BS.pack []) 
   connectPeer request peerHostname peerPort
-    (\peerId -> putStrLn $ "Peer ID: " <> peerId)
+    (\peerId socket -> do
+        (len, id, body) <- recvPeerMessage socket
+        send socket (BS.pack (word64ToBytes 1 ++ [2]))
+        (len2, id2, body2) <- recvPeerMessage socket
+        let makeRequest blockOffset blockLen = do
+              send socket (BS.pack (word64ToBytes 13 ++                     -- message len
+                              [6] ++                                        -- message id
+                              word64ToBytes (fromIntegral pieceIndex) ++    -- pieceIndex
+                              word64ToBytes blockOffset ++                  -- block offset 
+                              word64ToBytes blockLen))                      -- block length 
+              (len3, id3, body3) <- recvPeerMessage socket
+              if id3 == BS.pack [7] then do
+                BS.appendFile outFile (BS.drop 8 body3)
+                return (1 :: Int) 
+              else
+                return (0 :: Int)
+        let requestLoop blockNum
+              | blockNum < blocks = do
+                  res <- makeRequest ((2 ^ 14) * fromIntegral blockNum) 16384
+                  requestLoop (blockNum + res)
+              | blockNum == blocks = do
+                  when (lastSize > 0) $ do
+                      makeRequest ((2 ^ 14) * fromIntegral blockNum) (fromIntegral lastSize)
+                      return ()
+                  return ()
+        requestLoop 0
+    )
 
 
 main :: IO ()
@@ -225,9 +268,10 @@ main = do
                          \download_piece -o \
                          \<out_file> <torrent_file> <piece_index>"
                 exitWith (ExitFailure 1)
-            let pieceIndex = fromMaybe (-1 :: Int) (readMaybe (args !! 4))
-            if pieceIndex < 0 then
-              putStrLn "piece_index must be a positive number"
-            else
-              doDownloadPiece (args !! 2) (args !! 3) pieceIndex
+            maybePieceIndex <- runMaybeT $ do
+                 MaybeT (return $ (readMaybe (args !! 4) :: Maybe Int)
+                         >>= (\i -> if i >= 0 then return i else Nothing))
+            case maybePieceIndex of
+              Just pieceIndex -> doDownloadPiece (args !! 2) (args !! 3) pieceIndex
+              Nothing -> putStrLn "piece_index must be a positive number"
         _ -> putStrLn $ "Unknown command: " ++ command

@@ -23,6 +23,7 @@ dependencies:
 - mtl  # may help with structuring
 - cryptohash-sha1
 - HTTP
+- transformers
 # Parsing libs
 - megaparsec
 - parser-combinators
